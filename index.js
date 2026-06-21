@@ -32,6 +32,7 @@ async function run() {
     const Service = db.collection('Service');
     const imageCollection = db.collection('images');
     const Comments = db.collection('comments');
+    const HireRequest = db.collection('Hireing');
 
     console.log("Successfully connected to MongoDB.");
 
@@ -93,16 +94,15 @@ async function run() {
     app.get('/api/collectawyer', async (request, response) => {
       try {
         const result = await lawyerCollection.find().toArray();
-        response.json(result); // Standardized to .json()
+        response.json(result);
       } catch (error) {
         response.status(500).json({ error: "Failed to fetch lawyers list." });
       }
     });
 
 
-    // --- IMAGE ROUTES (WITH ATOMIC SYNC FIXES) ---
+    // --- IMAGE ROUTES ---
 
-    // Save a new user image record & sync it automatically to the lawyer's profile
     app.post('/api/images', async (request, response) => {
       try {
         const { userId, imageUrl } = request.body;
@@ -111,14 +111,12 @@ async function run() {
           return response.status(400).json({ error: "Missing userId or imageUrl." });
         }
 
-        // 1. Save to standalone image management collection
         const imageResult = await imageCollection.insertOne({
           userId,
           imageUrl,
           uploadedAt: new Date()
         });
 
-        // 2. CRITICAL SYNC: Simultaneously update the lawyer profile if it already exists
         await lawyerCollection.updateOne(
           { userId: userId },
           { $set: { profileImg: imageUrl, imageUrl: imageUrl } }
@@ -129,14 +127,12 @@ async function run() {
           imageUrl: imageUrl,
           imageResult
         });
-
       } catch (error) {
         console.error("Database error:", error);
         return response.status(500).json({ error: "Failed to save image." });
       }
     });
 
-    // Find a user image record by userId
     app.get('/api/images/:userid', async (request, response) => {
       try {
         const image = await imageCollection.findOne({ userId: request.params.userid });
@@ -149,7 +145,6 @@ async function run() {
       }
     });
 
-    // Update an image url record by userId & sync to lawyer collection
     app.patch('/api/images/:userid', async (request, response) => {
       try {
         const { imageUrl } = request.body;
@@ -168,7 +163,6 @@ async function run() {
           return response.status(404).json({ message: "User image record not found." });
         }
 
-        // CRITICAL SYNC: Keep the lawyer profile matching the updated image
         await lawyerCollection.updateOne(
           { userId: userid },
           { $set: { profileImg: imageUrl, imageUrl: imageUrl } }
@@ -183,7 +177,6 @@ async function run() {
 
     // --- SERVICE CATALOG ROUTES ---
 
-    // Get services filtered by a specific owner's query params (?userId=...)
     app.get('/api/service', async (request, response) => {
       try {
         const { userId } = request.query;
@@ -198,7 +191,6 @@ async function run() {
       }
     });
 
-    // Create a new catalog service item
     app.post('/api/service', async (request, response) => {
       try {
         const { title, price, description, userId } = request.body;
@@ -219,7 +211,6 @@ async function run() {
       }
     });
 
-    // Update a service item 
     app.put('/api/service/:id', async (request, response) => {
       try {
         const { id } = request.params;
@@ -243,7 +234,6 @@ async function run() {
       }
     });
 
-    // Delete a service item 
     app.delete('/api/service/:id', async (request, response) => {
       try {
         const { id } = request.params;
@@ -267,20 +257,15 @@ async function run() {
       try {
         const { author, role, rating, text, lawyerId, userId } = request.body;
 
-        // 1. Strict validation check for mandatory protocol variables
         if (!author || !rating || !text || !lawyerId || !userId) {
           return response.status(400).json({
             error: "Author, rating, text, lawyerId, and userId are required variables."
           });
         }
 
-        // 2. FIXED: Changed 'Image' to the correctly defined 'imageCollection' reference
         const imageRecord = await imageCollection.findOne({ userId: userId });
-
-        // Extract the matching imageUrl string, or default to an empty string if not uploaded yet
         const userImage = imageRecord?.imageUrl || "";
 
-        // 3. Insert structured payload with the correctly resolved image link
         const commentPayload = {
           author,
           role: role || "client",
@@ -293,49 +278,44 @@ async function run() {
           createdAt: new Date()
         };
 
-        // 4. FIXED: Changed 'Comment' to the correctly defined 'Comments' reference
         const result = await Comments.insertOne(commentPayload);
 
-        // 5. Return complete record matching your frontend state matrix expectations
         response.status(201).json({
           _id: result.insertedId,
           ...commentPayload
         });
       } catch (error) {
-        
         console.error("Database write execution failure details:", error);
         response.status(500).json({ error: "Failed to save secure comment briefing data." });
       }
     });
-    // --- GET COMMENTS WITH LAWYER DETAILS ---
-    app.get('/api/comments', async (request, response) => {
-      try {
-        const { lawyerId } = request.query;
 
-      
+    // FIXED MAPPING: Handles route parameter path matching /api/comments/:lawyerId
+    app.get('/api/comments/:lawyerId', async (request, response) => {
+      try {
+        const { lawyerId } = request.params;
+
         const matchStage = {};
-        if (lawyerId) {
+        if (lawyerId && lawyerId !== "undefined") {
           matchStage.lawyerId = lawyerId;
         }
 
-     
         const commentsWithLawyers = await Comments.aggregate([
           { $match: matchStage },
           {
             $lookup: {
-              from: 'lawyer',          
-              foreignField: '_id',    
-              as: 'lawyerDetails'      
+              from: 'lawyer',
+              localField: 'lawyerId',
+              foreignField: '_id',
+              as: 'lawyerDetails'
             }
           },
-         
           {
             $unwind: {
               path: '$lawyerDetails',
-              preserveNullAndEmptyArrays: true 
+              preserveNullAndEmptyArrays: true
             }
           },
-         
           { $sort: { createdAt: -1 } }
         ]).toArray();
 
@@ -346,10 +326,101 @@ async function run() {
       }
     });
 
+
+    // --- HIRING PIPELINE INTERFACES ---
+
+    // 1. POST: Client creates the contract request
+    app.post("/api/hiring", async (req, res) => {
+      try {
+        const { clientId, clientName, clientEmail, lawyerId, caseType, urgency, pricingDetails } = req.body;
+
+        const newRequest = {
+          clientId,
+          clientName,
+          clientEmail,
+          lawyerId,
+          caseType,
+          urgency,
+          pricingDetails,
+          status: "pending",
+          createdAt: new Date()
+        };
+
+        const result = await HireRequest.insertOne(newRequest);
+        res.status(201).json({ _id: result.insertedId, ...newRequest });
+      } catch (error) {
+        res.status(500).json({ error: "Failed to complete pipeline assignment initialization write." });
+      }
+    });
+
+    // 2. PATCH: Lawyer accepts or rejects the pipeline listing
+    app.patch("/api/hiring/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { status } = req.body; // "accepted" or "rejected"
+
+        const result = await HireRequest.findOneAndUpdate(
+          { _id: new ObjectId(id) },
+          { $set: { status, updatedDecisionAt: new Date() } },
+          { returnDocument: "after" }
+        );
+
+        if (!result) {
+          return res.status(404).json({ error: "Hiring transaction document targeted could not be found." });
+        }
+        res.status(200).json(result);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to update pipeline listing status tracking data." });
+      }
+    });
+
+    // 3. POST: Client handles checkout gateway resolution
+    app.post("/api/hiring/:id/payment", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { paymentDetails } = req.body;
+
+        const result = await HireRequest.findOneAndUpdate(
+          { _id: new ObjectId(id) },
+          { $set: { status: "paid", paymentMetadata: paymentDetails, paidAt: new Date() } },
+          { returnDocument: "after" }
+        );
+
+        if (!result) {
+          return res.status(404).json({ error: "Hiring transaction target mapping error." });
+        }
+        res.status(200).json(result);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to inject validated gateway ledger settlement parameters." });
+      }
+    });
+    // 4. GET: Fetch all active pending requests for a specific lawyer
+    app.get("/api/hiring", async (req, res) => {
+      try {
+        const { lawyerId } = req.query;
+
+        if (!lawyerId) {
+          return res.status(400).json({ error: "Missing lawyerId query parameter." });
+        }
+
+        // Finds documents matching this specific lawyer that still need a decision
+        const requests = await HireRequest.find({
+          lawyerId: lawyerId,
+          status: "pending"
+        }).sort({ createdAt: -1 }).toArray();
+
+        res.status(200).json(requests);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: "Failed to read lawyer hiring history pipeline." });
+      }
+    });
+
   } catch (dbError) {
     console.error("Database initialization failed:", dbError);
   }
 }
+
 run().catch(console.dir);
 
 app.listen(port, () => {
