@@ -31,6 +31,7 @@ async function run() {
     const lawyerCollection = db.collection('lawyer');
     const Service = db.collection('Service');
     const imageCollection = db.collection('images');
+    const Comments = db.collection('comments');
 
     console.log("Successfully connected to MongoDB.");
 
@@ -40,9 +41,9 @@ async function run() {
     app.post('/api/lawyer', async (request, response) => {
       try {
         const result = await lawyerCollection.insertOne(request.body);
-        response.status(201).send(result);
+        response.status(201).json(result);
       } catch (error) {
-        response.status(500).send({ error: "Failed to save lawyer profile." });
+        response.status(500).json({ error: "Failed to save lawyer profile." });
       }
     });
 
@@ -92,31 +93,46 @@ async function run() {
     app.get('/api/collectawyer', async (request, response) => {
       try {
         const result = await lawyerCollection.find().toArray();
-        response.send(result);
+        response.json(result); // Standardized to .json()
       } catch (error) {
-        response.status(500).send({ error: "Failed to fetch lawyers list." });
+        response.status(500).json({ error: "Failed to fetch lawyers list." });
       }
     });
 
 
-    // --- IMAGE ROUTES ---
+    // --- IMAGE ROUTES (WITH ATOMIC SYNC FIXES) ---
 
-    // Save a new user image record
+    // Save a new user image record & sync it automatically to the lawyer's profile
     app.post('/api/images', async (request, response) => {
       try {
         const { userId, imageUrl } = request.body;
+
         if (!userId || !imageUrl) {
-          return response.status(400).send({ error: "Missing userId or imageUrl." });
+          return response.status(400).json({ error: "Missing userId or imageUrl." });
         }
 
-        const result = await imageCollection.insertOne({
+        // 1. Save to standalone image management collection
+        const imageResult = await imageCollection.insertOne({
           userId,
           imageUrl,
           uploadedAt: new Date()
         });
-        response.status(201).send({ success: true, result });
+
+        // 2. CRITICAL SYNC: Simultaneously update the lawyer profile if it already exists
+        await lawyerCollection.updateOne(
+          { userId: userId },
+          { $set: { profileImg: imageUrl, imageUrl: imageUrl } }
+        );
+
+        return response.status(201).json({
+          success: true,
+          imageUrl: imageUrl,
+          imageResult
+        });
+
       } catch (error) {
-        response.status(500).send({ error: "Failed to save image." });
+        console.error("Database error:", error);
+        return response.status(500).json({ error: "Failed to save image." });
       }
     });
 
@@ -133,23 +149,32 @@ async function run() {
       }
     });
 
-    // Update an image url record by userId
+    // Update an image url record by userId & sync to lawyer collection
     app.patch('/api/images/:userid', async (request, response) => {
       try {
         const { imageUrl } = request.body;
+        const { userid } = request.params;
+
         if (!imageUrl) {
           return response.status(400).json({ message: "New image URL is required." });
         }
 
-        const result = await imageCollection.updateOne(
-          { userId: request.params.userid },
+        const imageResult = await imageCollection.updateOne(
+          { userId: userid },
           { $set: { imageUrl, updatedAt: new Date() } }
         );
 
-        if (result.matchedCount === 0) {
+        if (imageResult.matchedCount === 0) {
           return response.status(404).json({ message: "User image record not found." });
         }
-        response.json({ message: "Image updated successfully", result });
+
+        // CRITICAL SYNC: Keep the lawyer profile matching the updated image
+        await lawyerCollection.updateOne(
+          { userId: userid },
+          { $set: { profileImg: imageUrl, imageUrl: imageUrl } }
+        );
+
+        response.json({ message: "Image updated successfully across database collections.", imageResult });
       } catch (error) {
         response.status(500).json({ message: "Internal server error." });
       }
@@ -163,13 +188,13 @@ async function run() {
       try {
         const { userId } = request.query;
         if (!userId) {
-          return response.status(400).send({ error: "userId query parameter is required." });
+          return response.status(400).json({ error: "userId query parameter is required." });
         }
 
         const results = await Service.find({ userId }).toArray();
-        response.status(200).send(results);
+        response.status(200).json(results);
       } catch (error) {
-        response.status(500).send({ error: "Failed to retrieve service data." });
+        response.status(500).json({ error: "Failed to retrieve service data." });
       }
     });
 
@@ -178,7 +203,7 @@ async function run() {
       try {
         const { title, price, description, userId } = request.body;
         if (!title || !price || !userId) {
-          return response.status(400).send({ error: "Title, price, and userId are required." });
+          return response.status(400).json({ error: "Title, price, and userId are required." });
         }
 
         const result = await Service.insertOne({
@@ -188,20 +213,20 @@ async function run() {
           userId,
           createdAt: new Date()
         });
-        response.status(201).send(result);
+        response.status(201).json(result);
       } catch (error) {
-        response.status(500).send({ error: "Failed to save service data." });
+        response.status(500).json({ error: "Failed to save service data." });
       }
     });
 
-    // Update a service item (Validates that the authenticated userId owns the record)
+    // Update a service item 
     app.put('/api/service/:id', async (request, response) => {
       try {
         const { id } = request.params;
         const { title, price, description, userId } = request.body;
 
         if (!userId) {
-          return response.status(401).send({ error: "Unauthorized. Missing user data." });
+          return response.status(401).json({ error: "Unauthorized. Missing user data." });
         }
 
         const result = await Service.updateOne(
@@ -210,35 +235,114 @@ async function run() {
         );
 
         if (result.matchedCount === 0) {
-          return response.status(404).send({ error: "Service not found or unauthorized access." });
+          return response.status(404).json({ error: "Service not found or unauthorized access." });
         }
-        response.status(200).send(result);
+        response.status(200).json(result);
       } catch (error) {
-        response.status(500).send({ error: "Failed to update service parameters." });
+        response.status(500).json({ error: "Failed to update service parameters." });
       }
     });
 
-    // Delete a service item (Using safe query parameters for structural reliability)
+    // Delete a service item 
     app.delete('/api/service/:id', async (request, response) => {
       try {
         const { id } = request.params;
-        const { userId } = request.query; // Shifted safely from body to query
-
-        if (!userId) {
-          return response.status(401).send({ error: "Unauthorized access." });
-        }
 
         const result = await Service.deleteOne({
           _id: new ObjectId(id),
-          userId: userId
         });
 
         if (result.deletedCount === 0) {
-          return response.status(404).send({ error: "Service not found or unauthorized access." });
+          return response.status(404).json({ error: "Service not found or unauthorized access." });
         }
-        response.status(200).send({ message: "Service deleted successfully." });
+        response.status(200).json({ message: "Service deleted successfully." });
       } catch (error) {
-        response.status(500).send({ error: "Failed to remove service entity." });
+        response.status(500).json({ error: "Failed to remove service entity." });
+      }
+    });
+
+
+    // --- USER COMMENTS SECTION --- 
+    app.post('/api/comments', async (request, response) => {
+      try {
+        const { author, role, rating, text, lawyerId, userId } = request.body;
+
+        // 1. Strict validation check for mandatory protocol variables
+        if (!author || !rating || !text || !lawyerId || !userId) {
+          return response.status(400).json({
+            error: "Author, rating, text, lawyerId, and userId are required variables."
+          });
+        }
+
+        // 2. FIXED: Changed 'Image' to the correctly defined 'imageCollection' reference
+        const imageRecord = await imageCollection.findOne({ userId: userId });
+
+        // Extract the matching imageUrl string, or default to an empty string if not uploaded yet
+        const userImage = imageRecord?.imageUrl || "";
+
+        // 3. Insert structured payload with the correctly resolved image link
+        const commentPayload = {
+          author,
+          role: role || "client",
+          rating: Number(rating),
+          text,
+          lawyerId,
+          userId,
+          userImage,
+          date: new Date().toISOString().split('T')[0],
+          createdAt: new Date()
+        };
+
+        // 4. FIXED: Changed 'Comment' to the correctly defined 'Comments' reference
+        const result = await Comments.insertOne(commentPayload);
+
+        // 5. Return complete record matching your frontend state matrix expectations
+        response.status(201).json({
+          _id: result.insertedId,
+          ...commentPayload
+        });
+      } catch (error) {
+        
+        console.error("Database write execution failure details:", error);
+        response.status(500).json({ error: "Failed to save secure comment briefing data." });
+      }
+    });
+    // --- GET COMMENTS WITH LAWYER DETAILS ---
+    app.get('/api/comments', async (request, response) => {
+      try {
+        const { lawyerId } = request.query;
+
+      
+        const matchStage = {};
+        if (lawyerId) {
+          matchStage.lawyerId = lawyerId;
+        }
+
+     
+        const commentsWithLawyers = await Comments.aggregate([
+          { $match: matchStage },
+          {
+            $lookup: {
+              from: 'lawyer',          
+              foreignField: '_id',    
+              as: 'lawyerDetails'      
+            }
+          },
+         
+          {
+            $unwind: {
+              path: '$lawyerDetails',
+              preserveNullAndEmptyArrays: true 
+            }
+          },
+         
+          { $sort: { createdAt: -1 } }
+        ]).toArray();
+
+        response.status(200).json(commentsWithLawyers);
+      } catch (error) {
+        console.error("Aggregation lookup failure:", error);
+        response.status(500).json({ error: "Failed to retrieve compiled evaluation records." });
       }
     });
 
