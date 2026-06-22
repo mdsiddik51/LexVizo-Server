@@ -363,7 +363,7 @@ async function run() {
       }
     });
 
-     // -- GET THE COMENTS WITH LAWYER ID 
+    // -- GET THE COMENTS WITH LAWYER ID 
     app.get('/api/comments/:lawyerId', async (request, response) => {
       try {
         const { lawyerId } = request.params;
@@ -408,7 +408,7 @@ async function run() {
           return response.status(400).json({ error: "Valid User ID parameter is required." });
         }
 
-        
+
         const matchStage = {
           $or: [
             { userId: userId },
@@ -426,7 +426,7 @@ async function run() {
           { $match: matchStage },
           {
             $lookup: {
-              
+
               from: 'lawyers',
               localField: 'lawyerId',
               foreignField: '_id',
@@ -440,7 +440,7 @@ async function run() {
             }
           },
           { $sort: { createdAt: -1 } }
-        ]).toArray(); 
+        ]).toArray();
 
         console.log(`📥 Database matched ${userComments.length} documents for client pipeline.`);
 
@@ -456,7 +456,7 @@ async function run() {
     app.patch('/api/comments/:commentId', async (request, response) => {
       try {
         const { commentId } = request.params;
-        const { text, rating } = request.body; 
+        const { text, rating } = request.body;
 
         if (!commentId || commentId === "undefined") {
           return response.status(400).json({ error: "Comment ID is required." });
@@ -466,11 +466,11 @@ async function run() {
           _id: ObjectId.isValid(commentId) ? new ObjectId(commentId) : commentId
         };
 
-        
+
         const updateFields = {};
         if (text !== undefined) updateFields.text = text;
         if (rating !== undefined) updateFields.rating = Number(rating);
-        updateFields.updatedAt = new Date(); 
+        updateFields.updatedAt = new Date();
 
         const result = await Comments.updateOne(query, { $set: updateFields });
 
@@ -519,13 +519,25 @@ async function run() {
     // 1. POST: Client creates the contract request
     app.post("/api/hiring", async (req, res) => {
       try {
-        const { clientId, clientName, clientEmail, lawyerId, caseType, urgency, pricingDetails } = req.body;
+        const {
+          clientId,
+          clientName,
+          clientEmail,
+          lawyerId,
+          lawyerName,
+          lawyerImage,
+          caseType,
+          urgency,
+          pricingDetails
+        } = req.body;
 
         const newRequest = {
           clientId,
           clientName,
           clientEmail,
           lawyerId,
+          lawyerName,
+          lawyerImage: lawyerImage || "", // Saving it directly to the document database matrix
           caseType,
           urgency,
           pricingDetails,
@@ -536,10 +548,10 @@ async function run() {
         const result = await HireRequest.insertOne(newRequest);
         res.status(201).json({ _id: result.insertedId, ...newRequest });
       } catch (error) {
+        console.error("POST configuration write pipeline failure:", error);
         res.status(500).json({ error: "Failed to complete pipeline assignment initialization write." });
       }
     });
-
     // 2. PATCH: Lawyer accepts or rejects the pipeline listing
     app.patch("/api/hiring/:id", async (req, res) => {
       try {
@@ -581,25 +593,35 @@ async function run() {
         res.status(500).json({ error: "Failed to inject validated gateway ledger settlement parameters." });
       }
     });
-    // 4. GET: Fetch all active pending requests for a specific lawyer
+  
+    // 4. GET: Fetch active requests for either a specific lawyer OR a specific client
     app.get("/api/hiring", async (req, res) => {
       try {
-        const { lawyerId } = req.query;
+        const { lawyerId, clientId } = req.query;
 
-        if (!lawyerId) {
-          return res.status(400).json({ error: "Missing lawyerId query parameter." });
+        if (!lawyerId && !clientId) {
+          return res.status(400).json({
+            error: "Missing identification parameters. Provide either lawyerId or clientId."
+          });
         }
 
-        // Finds documents matching this specific lawyer that still need a decision
-        const requests = await HireRequest.find({
-          lawyerId: lawyerId,
-          status: "pending"
-        }).sort({ createdAt: -1 }).toArray();
+        let queryFilter = {};
+
+        if (lawyerId) {
+          // FIXED: Removed status: "pending" so we fetch paid, accepted, and pending records alike!
+          queryFilter = { lawyerId: lawyerId };
+        } else if (clientId) {
+          queryFilter = { clientId: clientId };
+        }
+
+        const requests = await HireRequest.find(queryFilter)
+          .sort({ createdAt: -1 })
+          .toArray();
 
         res.status(200).json(requests);
       } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: "Failed to read lawyer hiring history pipeline." });
+        console.error("Pipeline read error:", error);
+        res.status(500).json({ error: "Failed to read hiring dashboard data pipeline." });
       }
     });
 
