@@ -4,15 +4,25 @@ const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const port = 8080;
 
+// =========================================================================
+// 1. ENVIRONMENT CONFIGURATION & CONFIG INITIALIZATION (MUST BE AT THE TOP)
+// =========================================================================
+require('dotenv').config();
 app.use(cors());
 app.use(express.json());
-require('dotenv').config();
 
-// Base test route
+// Initialize Stripe now that dotenv has populated process.env safely
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+console.log(process.env.STRIPE_SECRET_KEY)
+
 app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
+// =========================================================================
+// 2. DATABASE SYSTEM CONNECTIONS
+// =========================================================================
 const uri = process.env.MONGO_DB_URI;
 const client = new MongoClient(uri, {
   serverApi: {
@@ -27,62 +37,45 @@ async function run() {
     await client.connect();
     const db = client.db('LexVizo');
 
-    // Collections
     const Users = db.collection('user');
     const lawyerCollection = db.collection('lawyer');
     const Service = db.collection('Service');
     const imageCollection = db.collection('images');
     const Comments = db.collection('comments');
     const HireRequest = db.collection('Hireing');
+    const Transactions = db.collection('transactions');
 
     console.log("Successfully connected to MongoDB.");
 
-
-    // --- USER ACTIONS ------
+    // =========================================================================
+    // 3. USER MANAGEMENT ROUTER REGISTRY
+    // =========================================================================
     app.put('/api/user/:userid', async (req, res) => {
       try {
         const { userid } = req.params;
-        // We can accept fullName from the frontend body...
         const { fullName } = req.body;
 
-        // 1. Guard check for invalid MongoDB IDs
         if (!ObjectId.isValid(userid)) {
-          return res.status(400).json({
-            success: false,
-            message: 'Invalid user ID format.'
-          });
+          return res.status(400).json({ success: false, message: 'Invalid user ID format.' });
         }
 
-        // 2. Guard check to make sure a name was actually passed
         if (!fullName || fullName.trim() === "") {
-          return res.status(400).json({
-            success: false,
-            message: 'A valid name parameter is required.'
-          });
+          return res.status(400).json({ success: false, message: 'A valid name parameter is required.' });
         }
 
-        // 3. Update the correct document entry ('name' instead of 'fullName')
         const updateResult = await Users.findOneAndUpdate(
           { _id: new ObjectId(userid) },
-          { $set: { name: fullName.trim() } }, // <-- CHANGED THIS to 'name' to target the auth field
-          {
-            returnDocument: 'after',
-            projection: { password: 0 }
-          }
+          { $set: { name: fullName.trim() } },
+          { returnDocument: 'after', projection: { password: 0 } }
         );
 
         if (!updateResult) {
-          return res.status(404).json({
-            success: false,
-            message: 'User matching that ID was not found.'
-          });
+          return res.status(404).json({ success: false, message: 'User matching that ID was not found.' });
         }
 
-        // --- Format the return object for your React UI state pipeline ---
-        // If your React UI state expects a 'fullName' key returned in data, map it here:
         const responseData = {
           ...updateResult,
-          fullName: updateResult.name // Ensures your client-side `updatedData.fullName` won't break
+          fullName: updateResult.name
         };
 
         return res.status(200).json({
@@ -90,20 +83,15 @@ async function run() {
           message: 'User name updated successfully!',
           data: responseData
         });
-
       } catch (error) {
         console.error('Error updating name:', error);
-        return res.status(500).json({
-          success: false,
-          message: 'Internal Server Error. Could not handle data update.'
-        });
+        return res.status(500).json({ success: false, message: 'Internal Server Error.' });
       }
     });
 
-
-    // --- LAWYER PROFILE ROUTES ---
-
-    // Create a new lawyer profile
+    // =========================================================================
+    // 4. LAWYER MANAGEMENT ROUTER REGISTRY
+    // =========================================================================
     app.post('/api/lawyer', async (request, response) => {
       try {
         const result = await lawyerCollection.insertOne(request.body);
@@ -113,7 +101,6 @@ async function run() {
       }
     });
 
-    // Get a specific lawyer profile by userId
     app.get('/api/lawyer/:userid', async (request, response) => {
       try {
         const data = await lawyerCollection.findOne({ userId: request.params.userid });
@@ -126,10 +113,8 @@ async function run() {
       }
     });
 
-    // Update fields on a lawyer profile by userId
     app.patch('/api/lawyer/:userid', async (request, response) => {
       try {
-        // 1. Add isBusy to your destructured parameters
         const { name, email, specialization, bio, hourlyFee, currency, profileImg, isBusy } = request.body;
         const updateDoc = { $set: {} };
 
@@ -141,9 +126,7 @@ async function run() {
         if (currency !== undefined) updateDoc.$set.currency = currency;
         if (profileImg !== undefined) updateDoc.$set.profileImg = profileImg;
 
-        // 2. Append isBusy validation to the Mongo $set pipeline
         if (isBusy !== undefined) {
-          // Cast explicitly to boolean just in case an odd payload makes through
           updateDoc.$set.isBusy = isBusy === true || isBusy === "true";
         }
 
@@ -158,12 +141,11 @@ async function run() {
 
         response.json({ message: "Profile updated successfully", result });
       } catch (error) {
-        console.error("Backend patching error:", error); // Helpful for logging stack traces
+        console.error("Backend patching error:", error);
         response.status(500).json({ message: "Internal server error while updating profile." });
       }
     });
 
-    // Get all registered lawyer profiles
     app.get('/api/collectawyer', async (request, response) => {
       try {
         const result = await lawyerCollection.find().toArray();
@@ -173,13 +155,12 @@ async function run() {
       }
     });
 
-
-    // --- IMAGE ROUTES ---
-
+    // =========================================================================
+    // 5. IMAGES & CUSTOM ASSET INTERFACES
+    // =========================================================================
     app.post('/api/images', async (request, response) => {
       try {
         const { userId, imageUrl } = request.body;
-
         if (!userId || !imageUrl) {
           return response.status(400).json({ error: "Missing userId or imageUrl." });
         }
@@ -195,11 +176,7 @@ async function run() {
           { $set: { profileImg: imageUrl, imageUrl: imageUrl } }
         );
 
-        return response.status(201).json({
-          success: true,
-          imageUrl: imageUrl,
-          imageResult
-        });
+        return response.status(201).json({ success: true, imageUrl: imageUrl, imageResult });
       } catch (error) {
         console.error("Database error:", error);
         return response.status(500).json({ error: "Failed to save image." });
@@ -241,22 +218,21 @@ async function run() {
           { $set: { profileImg: imageUrl, imageUrl: imageUrl } }
         );
 
-        response.json({ message: "Image updated successfully across database collections.", imageResult });
+        response.json({ message: "Image updated successfully.", imageResult });
       } catch (error) {
         response.status(500).json({ message: "Internal server error." });
       }
     });
 
-
-    // --- SERVICE CATALOG ROUTES ---
-
+    // =========================================================================
+    // 6. FIRM SERVICES ROUTER
+    // =========================================================================
     app.get('/api/service', async (request, response) => {
       try {
         const { userId } = request.query;
         if (!userId) {
           return response.status(400).json({ error: "userId query parameter is required." });
         }
-
         const results = await Service.find({ userId }).toArray();
         response.status(200).json(results);
       } catch (error) {
@@ -310,10 +286,7 @@ async function run() {
     app.delete('/api/service/:id', async (request, response) => {
       try {
         const { id } = request.params;
-
-        const result = await Service.deleteOne({
-          _id: new ObjectId(id),
-        });
+        const result = await Service.deleteOne({ _id: new ObjectId(id) });
 
         if (result.deletedCount === 0) {
           return response.status(404).json({ error: "Service not found or unauthorized access." });
@@ -324,16 +297,15 @@ async function run() {
       }
     });
 
-
-    // --- USER COMMENTS SECTION --- 
+    // =========================================================================
+    // 7. CLIENT EVALUATION COMMENTS AND FEEDBACK
+    // =========================================================================
     app.post('/api/comments', async (request, response) => {
       try {
         const { author, role, rating, text, lawyerId, userId } = request.body;
 
         if (!author || !rating || !text || !lawyerId || !userId) {
-          return response.status(400).json({
-            error: "Author, rating, text, lawyerId, and userId are required variables."
-          });
+          return response.status(400).json({ error: "Missing required comment payload fields." });
         }
 
         const imageRecord = await imageCollection.findOne({ userId: userId });
@@ -352,22 +324,15 @@ async function run() {
         };
 
         const result = await Comments.insertOne(commentPayload);
-
-        response.status(201).json({
-          _id: result.insertedId,
-          ...commentPayload
-        });
+        response.status(201).json({ _id: result.insertedId, ...commentPayload });
       } catch (error) {
-        console.error("Database write execution failure details:", error);
-        response.status(500).json({ error: "Failed to save secure comment briefing data." });
+        response.status(500).json({ error: "Failed to save comment briefing data." });
       }
     });
 
-    // -- GET THE COMENTS WITH LAWYER ID 
     app.get('/api/comments/:lawyerId', async (request, response) => {
       try {
         const { lawyerId } = request.params;
-
         const matchStage = {};
         if (lawyerId && lawyerId !== "undefined") {
           matchStage.lawyerId = lawyerId;
@@ -394,20 +359,16 @@ async function run() {
 
         response.status(200).json(commentsWithLawyers);
       } catch (error) {
-        console.error("Aggregation lookup failure:", error);
         response.status(500).json({ error: "Failed to retrieve compiled evaluation records." });
       }
     });
 
-    // GIT USER COMMENT WITH USER ID 
     app.get('/api/comments/user/:userId', async (request, response) => {
       try {
         const { userId } = request.params;
-
         if (!userId || userId === "undefined") {
           return response.status(400).json({ error: "Valid User ID parameter is required." });
         }
-
 
         const matchStage = {
           $or: [
@@ -420,13 +381,10 @@ async function run() {
           ]
         };
 
-        console.log("📡 Running LexVizo Aggregation Matrix with Match Stage:", JSON.stringify(matchStage, null, 2));
-
         const userComments = await Comments.aggregate([
           { $match: matchStage },
           {
             $lookup: {
-
               from: 'lawyers',
               localField: 'lawyerId',
               foreignField: '_id',
@@ -442,16 +400,11 @@ async function run() {
           { $sort: { createdAt: -1 } }
         ]).toArray();
 
-        console.log(`📥 Database matched ${userComments.length} documents for client pipeline.`);
-
         response.status(200).json(userComments);
       } catch (error) {
-        console.error(" Failed to retrieve", error);
         response.status(500).json({ error: "Failed to retrieve user evaluation records." });
       }
     });
-
-    // UPDATAE TEH COMMENTS 
 
     app.patch('/api/comments/:commentId', async (request, response) => {
       try {
@@ -462,74 +415,54 @@ async function run() {
           return response.status(400).json({ error: "Comment ID is required." });
         }
 
-        const query = {
-          _id: ObjectId.isValid(commentId) ? new ObjectId(commentId) : commentId
-        };
-
-
+        const query = { _id: ObjectId.isValid(commentId) ? new ObjectId(commentId) : commentId };
         const updateFields = {};
         if (text !== undefined) updateFields.text = text;
         if (rating !== undefined) updateFields.rating = Number(rating);
         updateFields.updatedAt = new Date();
 
         const result = await Comments.updateOne(query, { $set: updateFields });
-
         if (result.matchedCount === 0) {
           return response.status(404).json({ error: "Target comment asset not found." });
         }
 
         response.status(200).json({ success: true, message: "Comment successfully updated." });
       } catch (error) {
-        console.error("Failed to update comment record:", error);
         response.status(500).json({ error: "An error occurred while saving updates." });
       }
     });
 
-
-    // DELETE TEH COMMENTS 
-
     app.delete('/api/comments/:commentId', async (request, response) => {
       try {
         const { commentId } = request.params;
-
         if (!commentId || commentId === "undefined") {
           return response.status(400).json({ error: "Comment ID is required." });
         }
 
-        const query = {
-          _id: ObjectId.isValid(commentId) ? new ObjectId(commentId) : commentId
-        };
-
+        const query = { _id: ObjectId.isValid(commentId) ? new ObjectId(commentId) : commentId };
         const result = await Comments.deleteOne(query);
 
         if (result.deletedCount === 0) {
           return response.status(404).json({ error: "Target comment asset not found or already missing." });
         }
-
         response.status(200).json({ success: true, message: "Comment successfully deleted." });
       } catch (error) {
-        console.error("Failed to eliminate comment record:", error);
         response.status(500).json({ error: "An unexpected error occurred during record removal." });
       }
     });
 
-
-    // --- HIRING PIPELINE INTERFACES ---
-
-    // 1. POST: Client creates the contract request
+    // =========================================================================
+    // 8. LEGAL ENGAGEMENT & PIPELINE MANAGEMENT
+    // =========================================================================
     app.post("/api/hiring", async (req, res) => {
       try {
-        const {
-          clientId,
-          clientName,
-          clientEmail,
-          lawyerId,
-          lawyerName,
-          lawyerImage,
-          caseType,
-          urgency,
-          pricingDetails
-        } = req.body;
+        const { clientId, clientName, clientEmail, lawyerId, lawyerName, lawyerImage, caseType, urgency, pricingDetails } = req.body;
+        const incomingAmount = pricingDetails?.amount;
+        let validatedAmount = Number(incomingAmount);
+
+        if (isNaN(validatedAmount) || validatedAmount <= 0) {
+          validatedAmount = 100;
+        }
 
         const newRequest = {
           clientId,
@@ -537,10 +470,13 @@ async function run() {
           clientEmail,
           lawyerId,
           lawyerName,
-          lawyerImage: lawyerImage || "", // Saving it directly to the document database matrix
+          lawyerImage: lawyerImage || "",
           caseType,
           urgency,
-          pricingDetails,
+          pricingDetails: {
+            type: pricingDetails?.type || "hourly",
+            amount: validatedAmount
+          },
           status: "pending",
           createdAt: new Date()
         };
@@ -548,15 +484,14 @@ async function run() {
         const result = await HireRequest.insertOne(newRequest);
         res.status(201).json({ _id: result.insertedId, ...newRequest });
       } catch (error) {
-        console.error("POST configuration write pipeline failure:", error);
         res.status(500).json({ error: "Failed to complete pipeline assignment initialization write." });
       }
     });
-    // 2. PATCH: Lawyer accepts or rejects the pipeline listing
+
     app.patch("/api/hiring/:id", async (req, res) => {
       try {
         const { id } = req.params;
-        const { status } = req.body; // "accepted" or "rejected"
+        const { status } = req.body;
 
         const result = await HireRequest.findOneAndUpdate(
           { _id: new ObjectId(id) },
@@ -573,55 +508,154 @@ async function run() {
       }
     });
 
-    // 3. POST: Client handles checkout gateway resolution
-    app.post("/api/hiring/:id/payment", async (req, res) => {
-      try {
-        const { id } = req.params;
-        const { paymentDetails } = req.body;
-
-        const result = await HireRequest.findOneAndUpdate(
-          { _id: new ObjectId(id) },
-          { $set: { status: "paid", paymentMetadata: paymentDetails, paidAt: new Date() } },
-          { returnDocument: "after" }
-        );
-
-        if (!result) {
-          return res.status(404).json({ error: "Hiring transaction target mapping error." });
-        }
-        res.status(200).json(result);
-      } catch (error) {
-        res.status(500).json({ error: "Failed to inject validated gateway ledger settlement parameters." });
-      }
-    });
-  
-    // 4. GET: Fetch active requests for either a specific lawyer OR a specific client
     app.get("/api/hiring", async (req, res) => {
       try {
         const { lawyerId, clientId } = req.query;
-
         if (!lawyerId && !clientId) {
-          return res.status(400).json({
-            error: "Missing identification parameters. Provide either lawyerId or clientId."
-          });
+          return res.status(400).json({ error: "Missing identification parameters. Provide either lawyerId or clientId." });
         }
 
         let queryFilter = {};
-
         if (lawyerId) {
-          // FIXED: Removed status: "pending" so we fetch paid, accepted, and pending records alike!
           queryFilter = { lawyerId: lawyerId };
         } else if (clientId) {
           queryFilter = { clientId: clientId };
         }
 
-        const requests = await HireRequest.find(queryFilter)
-          .sort({ createdAt: -1 })
-          .toArray();
-
+        const requests = await HireRequest.find(queryFilter).sort({ createdAt: -1 }).toArray();
         res.status(200).json(requests);
       } catch (error) {
-        console.error("Pipeline read error:", error);
         res.status(500).json({ error: "Failed to read hiring dashboard data pipeline." });
+      }
+    });
+
+    // =========================================================================
+    // 9. RE-ARCHITECTED SECURE PAYMENT PROCESSORS (STRIPE)
+    // =========================================================================
+    app.post("/api/payment/create-checkout-session", async (req, res) => {
+      try {
+        const { hiringId } = req.body;
+        console.log("==> PAYMENT REQUEST RECEIVED FOR ID:", hiringId);
+
+        if (!hiringId) {
+          return res.status(400).json({ error: "Backend received an empty or undefined hiringId payload." });
+        }
+
+        let queryFilter = {};
+        if (ObjectId.isValid(hiringId)) {
+          queryFilter = { _id: new ObjectId(hiringId) };
+        } else {
+          queryFilter = { _id: hiringId };
+        }
+
+        const hiringRequest = await HireRequest.findOne(queryFilter);
+
+        if (!hiringRequest) {
+          console.log(`❌ DB Miss: Document ${hiringId} not found in collection 'Hireing'`);
+          return res.status(404).json({ error: `No transaction records found matching ID: ${hiringId}` });
+        }
+
+        // --- DEFENSIVE PROCESSING OF THE AMOUNT ---
+        let rawAmount = hiringRequest.pricingDetails?.amount || hiringRequest.amount;
+        console.log("🔍 Raw amount extracted from DB:", rawAmount);
+
+        // Strip out currency symbols or commas if stored as a string
+        if (typeof rawAmount === 'string') {
+          rawAmount = rawAmount.replace(/[^0-9.]/g, '');
+        }
+
+        let feeAmount = Number(rawAmount);
+
+        // Safe fallback default if database value is corrupted or missing
+        if (isNaN(feeAmount) || feeAmount <= 0) {
+          console.log("⚠️ Warning: Invalid amount numeric parse. Defaulting to fallback value of 100.");
+          feeAmount = 100;
+        }
+
+        const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+
+        // Generate Stripe checkout pipeline session
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ['card'],
+          line_items: [
+            {
+              price_data: {
+                currency: 'usd',
+                product_data: {
+                  name: `Legal Retainer Registration`,
+                  description: `Case Context Reference: ${hiringRequest.caseType || "General Consultancy"}`
+                },
+                unit_amount: Math.round(feeAmount * 100), // Secure conversion to cents
+              },
+              quantity: 1,
+            },
+          ],
+          mode: 'payment',
+          customer_email: hiringRequest.clientEmail || undefined,
+          success_url: `${clientUrl}/dashboard/client?payment_success=true&session_id={CHECKOUT_SESSION_ID}&hiringId=${hiringId}`,
+          cancel_url: `${clientUrl}/dashboard/client?payment_cancelled=true`,
+        });
+
+        console.log("✅ SUCCESS: Stripe session url constructed:", session.url);
+        return res.status(200).json({ url: session.url });
+
+      } catch (stripeErr) {
+        // This will print the precise reason why Stripe rejected your secret key or payload config
+        console.error("❌ Stripe Checkout Generation Failure Detail:", stripeErr);
+        return res.status(500).json({ error: "Stripe gateway session registration failed.", details: stripeErr.message });
+      }
+    });
+
+    app.post("/api/hiring/:id/payment", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { sessionId } = req.body;
+
+        if (!sessionId) {
+          return res.status(400).json({ error: "Session token reference missing." });
+        }
+
+        const sessionDetails = await stripe.checkout.sessions.retrieve(sessionId);
+        if (sessionDetails.payment_status !== 'paid') {
+          return res.status(400).json({ error: "Stripe execution loop maps state as unpaid." });
+        }
+
+        const existingTx = await Transactions.findOne({ transactionId: sessionDetails.payment_intent });
+        if (existingTx) {
+          const contextRecord = await HireRequest.findOne({ _id: new ObjectId(id) });
+          return res.status(200).json(contextRecord);
+        }
+
+        const updatedHiring = await HireRequest.findOneAndUpdate(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              status: "paid",
+              stripeSessionId: sessionId,
+              transactionId: sessionDetails.payment_intent,
+              paidAt: new Date()
+            }
+          },
+          { returnDocument: "after" }
+        );
+
+        if (!updatedHiring) {
+          return res.status(404).json({ error: "Hiring transaction target mapping error." });
+        }
+
+        await Transactions.insertOne({
+          transactionId: sessionDetails.payment_intent,
+          userEmail: updatedHiring.clientEmail,
+          lawyerEmail: updatedHiring.lawyerEmail || "assigned-expert@lexvizo.com",
+          amount: Number(updatedHiring.pricingDetails?.amount || 100),
+          date: new Date(),
+          hiringId: new ObjectId(id)
+        });
+
+        res.status(200).json(updatedHiring);
+      } catch (error) {
+        console.error("Payment confirmation error:", error);
+        res.status(500).json({ error: "Failed to inject validated gateway ledger settlement parameters." });
       }
     });
 
