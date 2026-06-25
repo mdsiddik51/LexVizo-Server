@@ -744,6 +744,16 @@ app.delete('/api/admin/users/:id', authenticateJWT, authorizeRole(['admin']), as
     const queryFilter = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
     const result = await Users.deleteOne(queryFilter);
     if (result.deletedCount === 0) return res.status(404).json({ error: 'User not found.' });
+
+    // Cascade delete: remove lawyer profile linked to this user
+    const lawyerCollection = db.collection('lawyer');
+    await lawyerCollection.deleteMany({
+      $or: [
+        { userId: id },
+        ...(ObjectId.isValid(id) ? [{ userId: new ObjectId(id) }] : [])
+      ]
+    });
+
     res.status(200).json({ success: true, message: 'User terminated successfully.' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete user.' });
